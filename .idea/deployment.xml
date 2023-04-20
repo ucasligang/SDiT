@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="gaos@192.168.20.7:22">
+    <serverData>
+      <paths name="gaos@192.168.20.7:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/pub/data/ligang/projects/DiT" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="gaos@192.168.20.7:22 (1)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/pub/data/ligang/projects/DiT" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>
