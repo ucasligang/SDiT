@@ -83,6 +83,7 @@ DiT models, but it can be easily modified to support other types of conditioning
 one node:
 
 ```bash
+CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 torchrun --nnodes=1 --nproc_per_node=2 train.py --model DiT-XL/2 --data-path ../../data/ADE/ADEChallengeData2016 --global_batch_size 48
 torchrun --nnodes=1 --nproc_per_node=N train.py --model DiT-XL/2 --data-path /path/to/imagenet/train
 
 torchrun --nnodes=1 --nproc_per_node=N train.py --model DiT-XL/2 --data-path /path/to/imagenet/train

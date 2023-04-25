@@ -18,6 +18,23 @@ import torchvision
 from diffusion.fp16_util import convert_module_to_f16, convert_module_to_f32
 import torch.nn.functional as F
 
+import torch.nn as nn
+
+
+class ZeroConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):
+        super(ZeroConv2d, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, dilation=dilation,
+                              groups=groups, bias=bias)
+        self.conv.weight.data.zero_()
+        if bias:
+            self.conv.bias.data.zero_()
+
+    def forward(self, x):
+        x = self.conv(x)
+        return x
+
+
 # By Gang Li.
 class Attention(Attention):
     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
@@ -27,8 +44,8 @@ class Attention(Attention):
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
         # Initilize gamma to 1.0
-        self.gamma1 = nn.Parameter(torch.ones(dim * 3))
-        self.gamma2 = nn.Parameter(torch.ones(dim))
+        #self.gamma1 = nn.Parameter(torch.ones(dim * 3))
+        #self.gamma2 = nn.Parameter(torch.ones(dim))
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -37,9 +54,9 @@ class Attention(Attention):
 
     def forward(self, x):
         B, N, C = x.shape
-        # qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         # Apply gamma
-        qkv = (self.gamma1 * self.qkv(x)).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        # qkv = (self.gamma1 * self.qkv(x)).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
@@ -47,9 +64,9 @@ class Attention(Attention):
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        #x = self.proj(x)
+        x = self.proj(x)
         # Apply gamma
-        x = self.gamma2 * self.proj(x)
+        # x = self.gamma2 * self.proj(x)
         x = self.proj_drop(x)
         return x
 
@@ -159,18 +176,19 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
         # Initilize gamma to 1.0
-        self.gamma1 = nn.Parameter(torch.ones(hidden_size))
-        self.gamma2 = nn.Parameter(torch.ones(hidden_size))
+        # self.gamma1 = nn.Parameter(torch.ones(hidden_size))
+        # self.gamma2 = nn.Parameter(torch.ones(hidden_size))
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
         #x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         #x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        #x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        # x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        x = x + self.gamma1 * gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + self.gamma2 * gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        # x = x + self.gamma1 * gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        # x = x + self.gamma2 * gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
+
 
 class OutNorm(nn.Module):
     def __init__(self, norm_nc, label_nc, eps = 1e-5):
@@ -182,11 +200,14 @@ class OutNorm(nn.Module):
         self.eps = eps
         nhidden = 128
         self.mlp_shared = nn.Sequential(
-            nn.Conv2d(label_nc, nhidden, kernel_size=3, padding=1),
+            #nn.Conv2d(label_nc, nhidden, kernel_size=3, padding=1),
+            ZeroConv2d(label_nc, nhidden, kernel_size=3, padding=1),
             nn.ReLU()
         )
-        self.mlp_gamma = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
-        self.mlp_beta = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
+        # self.mlp_gamma = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
+        self.mlp_gamma = ZeroConv2d(nhidden, norm_nc, kernel_size=3, padding=1)
+        # self.mlp_beta = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
+        self.mlp_beta = ZeroConv2d(nhidden, norm_nc, kernel_size=3, padding=1)
 
     def forward(self, x, segmap):
         # Part 1. generate parameter-free normalized activations N,C,H,W
@@ -246,8 +267,8 @@ class DiT(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
-        self.label_resize1 = torchvision.transforms.Resize([16, 16], torchvision.transforms.InterpolationMode.NEAREST)
-        self.label_resize2 = torchvision.transforms.Resize([32, 32], torchvision.transforms.InterpolationMode.NEAREST)
+        self.label_resize1 = torchvision.transforms.Resize([input_size//2, input_size//2], torchvision.transforms.InterpolationMode.NEAREST)
+        self.label_resize2 = torchvision.transforms.Resize([input_size, input_size], torchvision.transforms.InterpolationMode.NEAREST)
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -260,7 +281,7 @@ class DiT(nn.Module):
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
 
-        self.out_norm = OutNorm(self.out_channels, hidden_size)
+        # self.out_norm = OutNorm(self.out_channels, hidden_size)
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
@@ -354,8 +375,9 @@ class DiT(nn.Module):
 
         x = self.final_layer(x, c1)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)          # (N, out_channels, H, W)  # x:[2,8,32,32] c2:[2, 32*32, D]
-        c2 = c2.permute(0, 3, 1, 2)
-        x = self.out_norm(x, c2)
+
+        # c2 = c2.permute(0, 3, 1, 2)
+        # x = self.out_norm(x, c2)
         return x
 
     def forward_with_cfg(self, x, t, y, cfg_scale):

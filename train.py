@@ -146,6 +146,7 @@ def main(args):
     latent_size = args.image_size // 8
     model = DiT_models[args.model](
         #input_size=args.image_size,
+        class_dropout_prob=args.class_dropout_prob,
         input_size=latent_size,
         num_classes=args.num_classes
     )
@@ -177,7 +178,7 @@ def main(args):
     for name, param in model.named_parameters():
         if 'y_embedder.embedding_table.weight' in name:
             continue
-        if ('bias' not in name) and ('gamma' not in name) and ('norm' not in name):
+        if ('bias' not in name): # and ('gamma' not in name) and ('norm' not in name):
             param.requires_grad = False
 
 
@@ -215,12 +216,13 @@ def main(args):
     #     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     # ])
 
+
     logger.info("creating data loader...")
     dataset = load_data(
         dataset_mode=args.dataset_mode,
         data_dir=args.data_path,
         image_size=args.image_size,
-        class_cond=args.class_cond,
+        # class_cond=args.class_cond,
         is_train=args.is_train
     )
     # ImageFolder(args.data_path, transform=transform)
@@ -348,6 +350,7 @@ if __name__ == "__main__":
     parser.add_argument("--is_train", type=bool, default=True)
     parser.add_argument("--resume", type=str, default='/pub/data/ligang/projects/DiT/pretrained_models/DiT-XL-2-256x256.pt')
     parser.add_argument("--use_fp16", type=bool, default=True)
+    parser.add_argument("--class_dropout_prob", type=float, default=0.0)
 
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
@@ -356,9 +359,11 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--global_batch_size", type=int, default=64) # 256
     parser.add_argument("--global-seed", type=int, default=0)
-    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")  # Choice doesn't affect training
+    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=20) # 100
     parser.add_argument("--ckpt-every", type=int, default=10_000) # 50_000
+
+
     args = parser.parse_args()
     main(args)

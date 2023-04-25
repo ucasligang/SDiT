@@ -190,7 +190,7 @@ if __name__ == "__main__":
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=150)
-    parser.add_argument("--cfg-scale", type=float, default=4.0)  # 0.15
+    parser.add_argument("--cfg-scale", type=float, default=1.5)  # 1.5 4.0
     parser.add_argument("--num-sampling-steps", type=int, default=250)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=1)  # 256
