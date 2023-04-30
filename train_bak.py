@@ -33,6 +33,8 @@ from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
 
+from diffusion.image_datasets import load_data
+from download import find_model
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
@@ -144,6 +146,26 @@ def main(args):
         input_size=latent_size,
         num_classes=args.num_classes
     )
+    # Updated by Gang Li.
+    if args.resume:
+        state_dict = find_model(args.resume)
+        state_dict.pop('y_embedder.embedding_table.weight', None)
+        model.load_state_dict(state_dict, strict=False)
+
+    for name, param in model.named_parameters():
+        if 'y_embedder.embedding_table.weight' in name:
+            continue
+        if ('bias' not in name) and ('norm' not in name) and ('gamma' not in name):
+            param.requires_grad = False
+
+
+    for name, param in model.named_parameters():
+        #if 'y_embedder.embedding_table' in name:
+        logger.info(name)
+        logger.info(param.requires_grad)
+
+
+
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
@@ -152,17 +174,30 @@ def main(args):
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    logger.info(f"Trainable DiT Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad == True):,}")
+
+    trainable_rate = (sum(p.numel() for p in model.parameters() if p.requires_grad == True)) / (
+        sum(p.numel() for p in model.parameters()))
+    logger.info(f"Trainable DiT Parameters rate is :{trainable_rate * 100}%")
+
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0)
 
     # Setup data:
-    transform = transforms.Compose([
-        transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
-    ])
-    dataset = ImageFolder(args.data_path, transform=transform)
+    # transform = transforms.Compose([
+    #     transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
+    #     transforms.RandomHorizontalFlip(),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
+    # ])
+    # dataset = ImageFolder(args.data_path, transform=transform)
+    dataset = load_data(
+        dataset_mode=args.dataset_mode,
+        data_dir=args.data_path,
+        image_size=args.image_size,
+        # class_cond=args.class_cond,
+        is_train=args.is_train
+    )
     sampler = DistributedSampler(
         dataset,
         num_replicas=dist.get_world_size(),
@@ -196,8 +231,9 @@ def main(args):
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
-        for x, y in loader:
+        for x, batch in loader:
             x = x.to(device)
+            y = batch['label_ori']
             y = y.to(device)
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
@@ -254,17 +290,25 @@ def main(args):
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-path", type=str, required=True)
+    parser.add_argument("--data-path", type=str, default='/pub/data/ligang/data/ADE/ADEChallengeData2016')
+    parser.add_argument("--dataset_mode", type=str, default='ade20k')
+    parser.add_argument("--class_cond", type=bool, default=True)
+    parser.add_argument("--is_train", type=bool, default=True)
+    parser.add_argument("--resume", type=str,
+                        default='/pub/data/ligang/projects/DiT/pretrained_models/DiT-XL-2-256x256.pt')
+    parser.add_argument("--use_fp16", type=bool, default=True)
+    parser.add_argument("--class_dropout_prob", type=float, default=0.1)
+
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
-    parser.add_argument("--num-classes", type=int, default=1000)
+    parser.add_argument("--num-classes", type=int, default=150)
     parser.add_argument("--epochs", type=int, default=1400)
-    parser.add_argument("--global-batch-size", type=int, default=16)
+    parser.add_argument("--global-batch-size", type=int, default=128)
     parser.add_argument("--global-seed", type=int, default=100)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--log-every", type=int, default=100) # 100
     parser.add_argument("--ckpt-every", type=int, default=50_000)
     args = parser.parse_args()
     main(args)
