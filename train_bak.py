@@ -35,6 +35,7 @@ from diffusers.models import AutoencoderKL
 
 from diffusion.image_datasets import load_data
 from download import find_model
+from apex import amp
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
@@ -165,10 +166,13 @@ def main(args):
         logger.info(param.requires_grad)
 
 
-
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0)
+
+    if args.use_fp16:
+        model, opt = amp.initialize(model.to(device), opt, opt_level="O1")
     model = DDP(model.to(device), device_ids=[rank])
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
@@ -181,8 +185,6 @@ def main(args):
     logger.info(f"Trainable DiT Parameters rate is :{trainable_rate * 100}%")
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0)
-
     # Setup data:
     # transform = transforms.Compose([
     #     transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
@@ -243,7 +245,13 @@ def main(args):
             loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
             loss = loss_dict["loss"].mean()
             opt.zero_grad()
-            loss.backward()
+            #loss.backward()
+            # Gang Li
+            if args.use_fp16:
+                with amp.scale_loss(loss, opt) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
             opt.step()
             update_ema(ema, model.module)
 
@@ -304,11 +312,11 @@ if __name__ == "__main__":
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=150)
     parser.add_argument("--epochs", type=int, default=1400)
-    parser.add_argument("--global-batch-size", type=int, default=128)
+    parser.add_argument("--global-batch-size", type=int, default=128
     parser.add_argument("--global-seed", type=int, default=100)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100) # 100
-    parser.add_argument("--ckpt-every", type=int, default=50_000)
+    parser.add_argument("--ckpt-every", type=int, default=10_000)
     args = parser.parse_args()
     main(args)
