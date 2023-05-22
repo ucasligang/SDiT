@@ -37,36 +37,57 @@ class ZeroConv2d(nn.Module):
 
 # By Gang Li.
 class Attention(Attention):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+    #def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0., r=4, dropout_p=0.1, scale=1.0):
         super().__init__(dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.)
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
         # Initilize gamma to 1.0
-        #self.gamma1 = nn.Parameter(torch.ones(dim * 3))
-        #self.gamma2 = nn.Parameter(torch.ones(dim))
+        self.gamma1 = nn.Parameter(torch.ones(dim * 3))
+        self.gamma2 = nn.Parameter(torch.ones(dim))
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
+        # Apply LoRA
+        self.r = r
+        self.lora_down = nn.Linear(dim, r, bias=False)
+        self.dropout = nn.Dropout(dropout_p)
+        self.lora_up = nn.Linear(r, dim, bias=False)
+        self.selector = nn.Identity()
+
+        nn.init.normal_(self.lora_down.weight, std=1 / r)
+        nn.init.zeros_(self.lora_up.weight)
+
     def forward(self, x):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        B, N, C = x.shape    # 16, 256, 1152
+        #qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4) # [3, B, num_heads, N, C/num_heads]
         # Apply gamma
         # qkv = (self.gamma1 * self.qkv(x)).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
+        qkv = (self.gamma1 * self.qkv(x)).reshape(B, N, 3, C)
+        # qkv = self.qkv(x).reshape(B, N, 3, C)
+
+        #q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
+
+        q, k, v = qkv.unbind(2)  # make torchscript happy (cannot use tensor as tuple)
+        q = q + self.dropout(self.lora_up(self.selector(self.lora_down(q))))
+        v = v + self.dropout(self.lora_up(self.selector(self.lora_down(v))))
+        q = q.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        v = v.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
+        # x = self.proj(x)
         # Apply gamma
-        # x = self.gamma2 * self.proj(x)
+        x = self.gamma2 * self.proj(x)
         x = self.proj_drop(x)
         return x
 
@@ -141,7 +162,6 @@ class LabelEmbedder(nn.Module):
         else:
             drop_ids = force_drop_ids == 1
         #none_label = torch.ones(labels.shape)*self.num_classes
-        drop_ids[0] = True
         drop_ids = drop_ids.unsqueeze(-1).unsqueeze(-1).repeat(labels[0].unsqueeze(0).shape)
         labels = torch.where(drop_ids, torch.tensor(self.num_classes+1, dtype=labels.dtype).to(labels), labels)
         #labels = torch.where(drop_ids, none_label, labels)
@@ -176,17 +196,17 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
         # Initilize gamma to 1.0
-        # self.gamma1 = nn.Parameter(torch.ones(hidden_size))
-        # self.gamma2 = nn.Parameter(torch.ones(hidden_size))
+        self.gamma1 = nn.Parameter(torch.ones(hidden_size))
+        self.gamma2 = nn.Parameter(torch.ones(hidden_size))
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
         #x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         #x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        # x = x + self.gamma1 * gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        # x = x + self.gamma2 * gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        # x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        # x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        x = x + self.gamma1 * gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        x = x + self.gamma2 * gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
 
@@ -230,7 +250,7 @@ class FinalLayer(nn.Module):
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
 
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)   # False update in 20230506
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -257,7 +277,7 @@ class DiT(nn.Module):
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
-        class_dropout_prob=0.1,
+        class_dropout_prob=0.0,
         num_classes=1000,
         learn_sigma=True,
     ):
@@ -283,7 +303,7 @@ class DiT(nn.Module):
 
         # self.out_norm = OutNorm(self.out_channels, hidden_size)
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
-        self.initialize_weights()
+        #self.initialize_weights() # Gang Li.
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -361,13 +381,13 @@ class DiT(nn.Module):
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
         y1 = self.y_embedder(y1, self.training)
-        y2 = self.y_embedder(y2, self.training)
+        #y2 = self.y_embedder(y2, self.training)
         t1 = t.unsqueeze(1).unsqueeze(1).repeat(1, y1.shape[1], y1.shape[2], 1)
         c1 = t1 + y1                                # (N,H/ patch_size,W/ patch_size,D)
         c1 = c1.reshape(x.shape[0], -1, x.shape[-1])  # (N,T,D)
 
-        t2 = t.unsqueeze(1).unsqueeze(1).repeat(1, y2.shape[1], y2.shape[2], 1)
-        c2 = t2+y2  # (N,H/ patch_size,W/ patch_size,D)
+        #t2 = t.unsqueeze(1).unsqueeze(1).repeat(1, y2.shape[1], y2.shape[2], 1)
+        #c2 = t2+y2  # (N,H/ patch_size,W/ patch_size,D)
         # c2 = c2.reshape(x.shape[0], -1, x.shape[-1])  # (N,T,D)
 
         for block in self.blocks:
@@ -395,6 +415,7 @@ class DiT(nn.Module):
         eps, rest = model_out[:, :3], model_out[:, 3:]
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+        #half_eps = cond_eps
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
 
