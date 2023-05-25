@@ -76,6 +76,7 @@ def main(args):
     # Load model:
     latent_size = args.image_size // 8
     model = DiT_models[args.model](
+        class_dropout_prob=args.class_dropout_prob,
         input_size=latent_size,
         num_classes=args.num_classes
     ).to(device)
@@ -83,8 +84,14 @@ def main(args):
     ckpt_path = args.ckpt or f"DiT-XL-2-{args.image_size}x{args.image_size}.pt"
     print(ckpt_path)
     state_dict = find_model(ckpt_path)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
+
     model.eval()  # important!
+    for name, param in model.named_parameters():
+        #if 'y_embedder.embedding_table' in name:
+        param.requires_grad = False
+        print(name)
+        print(param.requires_grad)
     diffusion = create_diffusion(str(args.num_sampling_steps))
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
 
@@ -143,7 +150,7 @@ def main(args):
         # Setup classifier-free guidance:
         z = torch.cat([z, z], 0)
         # y_null = torch.tensor([150] * n, device=device)
-        y_null = torch.ones(y.shape, device=device)*151
+        y_null = torch.ones(y.shape, device=device)*(-1)
         y = torch.cat([y, y_null], 0)
         model_kwargs = dict(y=y, cfg_scale=args.cfg_scale)
 
@@ -157,7 +164,6 @@ def main(args):
         samples = vae.decode(samples / 0.18215).sample
         print(samples.shape)
         # Save and display images:
-
 
         for j in range(samples.shape[0]):
             save_image(image[j], os.path.join(image_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
@@ -177,8 +183,6 @@ def main(args):
             break
 
 
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-path", type=str, default='/pub/data/ligang/data/ADE/ADEChallengeData2016')
@@ -186,12 +190,14 @@ if __name__ == "__main__":
     parser.add_argument("--num-samples", type=int, default=10)
     parser.add_argument("--class_cond", type=bool, default=True)
     parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
+    parser.add_argument("--class_dropout_prob", type=float, default=0.1)
+
     parser.add_argument("--dataset_mode", type=str, default='ade20k')
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=150)
-    parser.add_argument("--cfg-scale", type=float, default=1.5)  # 1.5 4.0
-    parser.add_argument("--num-sampling-steps", type=int, default=250)
+    parser.add_argument("--cfg-scale", type=float, default=2.5)  # 1.5 4.0
+    parser.add_argument("--num-sampling-steps", type=int, default=250) # 250
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=1)  # 256
     parser.add_argument("--ckpt", type=str, default='/pub/data/ligang/projects/DiT/pretrained_models/DiT-XL-2-512x512.pt',
