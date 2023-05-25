@@ -266,17 +266,12 @@ class DiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
-        self.y_embedder = LabelEmbedder(num_classes, hidden_size, patch_size)
-
         # Initilize gamma to 1.0
         self.gamma1 = nn.Parameter(torch.ones(hidden_size))
         self.gamma2 = nn.Parameter(torch.ones(hidden_size))
 
-    def forward(self, x, t, y):
-        y = self.y_embedder(y).permute(0, 2, 3, 1)
-        t = t.unsqueeze(1).unsqueeze(1).repeat(1, y.shape[1], y.shape[2], 1)
-        c = y+t
-        c = c.reshape(c.shape[0], -1, c.shape[-1])
+    def forward(self, x, c):
+
         # c = t.unsqueeze(1)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
         #x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
@@ -334,14 +329,14 @@ class FinalLayer(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
-        self.y_embedder = LabelEmbedder(num_classes, hidden_size, patch_size)
+        # self.y_embedder = LabelEmbedder(num_classes, hidden_size, patch_size)
 
-    def forward(self, x, t, y):  # x:256 c:1024
-        y = self.y_embedder(y).permute(0, 2, 3, 1)
-        t = t.unsqueeze(1).unsqueeze(1).repeat(1, y.shape[1], y.shape[2], 1)
-        #print(t.shape)
-        c = y+t
-        c = c.reshape(c.shape[0], -1, c.shape[-1])
+    def forward(self, x, c):  # x:256 c:1024
+        # y = self.y_embedder(y).permute(0, 2, 3, 1)
+        # t = t.unsqueeze(1).unsqueeze(1).repeat(1, y.shape[1], y.shape[2], 1)
+        # #print(t.shape)
+        # c = y+t
+        # c = c.reshape(c.shape[0], -1, c.shape[-1])
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1) # [2,256,1152]
 
         x = modulate(self.norm_final(x), shift, scale)
@@ -385,10 +380,10 @@ class DiT(nn.Module):
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, num_classes, patch_size, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-
+        self.y_embedder = LabelEmbedder(num_classes, hidden_size, patch_size)
         # self.out_norm = OutNorm(self.out_channels, hidden_size)
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels, num_classes)
-        #self.initialize_weights() # Gang Li.
+        self.initialize_weights() # Gang Li.
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -460,10 +455,16 @@ class DiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
+
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
 
         y = self.preprocess_input(y, self.training) # self.y_embedder(y, self.training).permute(0, 2, 3, 1)  # [2, 1152, 256, 256]-->[2, 256, 256, 1152]
+
+        y = self.y_embedder(y).permute(0, 2, 3, 1)
+        t = t.unsqueeze(1).unsqueeze(1).repeat(1, y.shape[1], y.shape[2], 1)
+        c = y+t
+        c = c.reshape(c.shape[0], -1, c.shape[-1])
 
         # c1 = t + y                                # (N,H/ patch_size,W/ patch_size,D)
         # c1 = c1.reshape(x.shape[0], -1, x.shape[-1])  # (N,T,D)
@@ -472,10 +473,13 @@ class DiT(nn.Module):
         #c2 = t2+y2  # (N,H/ patch_size,W/ patch_size,D)
         # c2 = c2.reshape(x.shape[0], -1, x.shape[-1])  # (N,T,D)
 
-        for block in self.blocks:
-            x = block(x, t, y)                      # (N, T, D)
 
-        x = self.final_layer(x, t, y)                # (N, T, patch_size ** 2 * out_channels) y:[2, 151, 256, 256]
+        for block in self.blocks:
+            #x = block(x, t, y)                      # (N, T, D)
+            x = block(x, c)
+
+        # x = self.final_layer(x, t, y)                # (N, T, patch_size ** 2 * out_channels) y:[2, 151, 256, 256]
+        x = self.final_layer(x, c)
         x = self.unpatchify(x)          # (N, out_channels, H, W)  # x:[2,8,32,32] c2:[2, 32*32, D]
 
         # c2 = c2.permute(0, 3, 1, 2)
