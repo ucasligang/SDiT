@@ -144,21 +144,26 @@ def main(args):
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
     model = DiT_models[args.model](
+        # input_size=args.image_size,
+        class_dropout_prob=args.class_dropout_prob,
         input_size=latent_size,
         num_classes=args.num_classes
     )
     # Updated by Gang Li.
     if args.resume:
         state_dict = find_model(args.resume)
-        state_dict.pop('y_embedder.embedding_table.weight', None)
+        # state_dict.pop('y_embedder.embedding_table.weight', None)
         model.load_state_dict(state_dict, strict=False)
-
+    
     for name, param in model.named_parameters():
-        if 'y_embedder.embedding_table.weight' in name:
-            continue
-        if ('bias' not in name) and ('norm' not in name) and ('gamma' not in name):
+        # if 'y_embedder.embedding_table.weight' in name:
+        #     continue
+        if ('bias' not in name) and ('norm' not in name) and ('gamma' not in name) and ('final_layer' not in name) \
+                and ('t_embedder' not in name) and ('y_embedder.embdding_seg.weight' not in name):
+        #        and ('attn' not in name) and ('final_layer' not in name):
+        #if ('lora' not in name) and ('bias' not in name) and ('norm' not in name) and ('gamma' not in name) and ('y_embedder.embedding_table.weight' not in name):
             param.requires_grad = False
-
+    
 
     for name, param in model.named_parameters():
         #if 'y_embedder.embedding_table' in name:
@@ -169,7 +174,7 @@ def main(args):
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0) # 1e-4
 
     if args.use_fp16:
         model, opt = amp.initialize(model.to(device), opt, opt_level="O1")
@@ -305,18 +310,18 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str,
                         default='/pub/data/ligang/projects/DiT/pretrained_models/DiT-XL-2-256x256.pt')
     parser.add_argument("--use_fp16", type=bool, default=True)
-    parser.add_argument("--class_dropout_prob", type=float, default=0.1)
+    parser.add_argument("--class_dropout_prob", type=float, default=0.0)
 
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=150)
     parser.add_argument("--epochs", type=int, default=1400)
-    parser.add_argument("--global-batch-size", type=int, default=128
+    parser.add_argument("--global-batch-size", type=int, default=16)
     parser.add_argument("--global-seed", type=int, default=100)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100) # 100
-    parser.add_argument("--ckpt-every", type=int, default=10_000)
+    parser.add_argument("--ckpt-every", type=int, default=5_000)
     args = parser.parse_args()
     main(args)
