@@ -159,7 +159,7 @@ def main(args):
         # if 'y_embedder.embedding_table.weight' in name:
         #     continue
         if ('bias' not in name) and ('norm' not in name) and ('gamma' not in name) and ('final_layer' not in name) \
-                and ('t_embedder' not in name) and ('y_embedder.embdding_seg.weight' not in name):
+                and ('y_embedder.embdding_seg.weight' not in name):
         #        and ('attn' not in name) and ('final_layer' not in name):
         #if ('lora' not in name) and ('bias' not in name) and ('norm' not in name) and ('gamma' not in name) and ('y_embedder.embedding_table.weight' not in name):
             param.requires_grad = False
@@ -314,7 +314,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
-    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
+    parser.add_argument("--image-size", type=int, choices=[256, 512], default=512)
     parser.add_argument("--num-classes", type=int, default=150)
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--global-batch-size", type=int, default=16)
