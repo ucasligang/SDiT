@@ -141,109 +141,38 @@ class TimestepEmbedder(nn.Module):
         t_emb = self.mlp(t_freq)
         return t_emb
 
-class Preprocess_input(nn.Module):
-    """
-    Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
-    """
-    def __init__(self, num_classes, hidden_size, patch_size, dropout_prob):
-        super().__init__()
-        # self.embedding_table = nn.Embedding(num_classes+1+use_cfg_embedding, hidden_size)  # Gang Li.
-        #self.embdding_seg = nn.Conv2d(num_classes+1, hidden_size, kernel_size=patch_size*8, stride=patch_size*8)
-        self.num_classes = num_classes
-        self.patch_size = patch_size
-        self.dropout_prob = dropout_prob
-
-    # def token_drop(self, labels, force_drop_ids=None):
-    #     """
-    #     Drops labels to enable classifier-free guidance.
-    #     """
-    #     if force_drop_ids is None:
-    #         drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
-    #     else:
-    #         drop_ids = force_drop_ids == 1
-    #     drop_ids = drop_ids.unsqueeze(-1).unsqueeze(-1).repeat(labels[0].unsqueeze(0).shape)
-    #     labels = torch.where(drop_ids, torch.tensor(self.num_classes, dtype=labels.dtype).to(labels), labels)
-    #     return labels
-
-    def forward(self, labels, train, force_drop_ids=None):
-        # use_dropout = self.dropout_prob > 0
-        # if (train and use_dropout) or (force_drop_ids is not None):
-        #     labels = self.token_drop(labels, force_drop_ids)
-        labels = labels.unsqueeze(1)
-        bs, _, h, w = labels.shape  # [2,256,256]
-        sample_mask = (labels!=-1)
-
-        input_label = torch.FloatTensor(bs, self.num_classes+1, h, w).zero_().to(labels)
-        if not train:
-            null = torch.zeros_like(labels)
-            labels = torch.where(labels==-1, null, labels)  # make it scatter correctly, then use sample_mask to recover the null label.
-
-        input_semantics = input_label.scatter_(1, labels.long(), 1.0).float()
-        # embeddings = self.embedding_table(labels.long())
-        if not train:
-            input_semantics = input_semantics * sample_mask
-
-        if self.dropout_prob > 0.0 and train:
-            mask = (torch.rand([input_semantics.shape[0], 1, 1, 1]) > self.dropout_prob).float()
-            input_semantics = input_semantics * mask.to(input_semantics)
-
-        return input_semantics
 
 class LabelEmbedder(nn.Module):
     """
     Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
     """
-    def __init__(self, num_classes, hidden_size, patch_size):
+    def __init__(self, num_classes, hidden_size, dropout_prob):
         super().__init__()
-        # self.embedding_table = nn.Embedding(num_classes+1+use_cfg_embedding, hidden_size)  # Gang Li.
-        #self.embdding_seg = nn.Conv2d(num_classes+1, hidden_size, kernel_size=patch_size*8, stride=patch_size*8)
-        self.patch_size = patch_size
-        self.embdding_seg = nn.Conv2d(num_classes+1, hidden_size, kernel_size=3, padding=1)
+        use_cfg_embedding = dropout_prob > 0
+        self.embedding_table = nn.Embedding(num_classes+1 + use_cfg_embedding, hidden_size)  # Gang Li.
+        self.num_classes = num_classes
+        self.dropout_prob = dropout_prob
 
-    # def token_drop(self, labels, force_drop_ids=None):
-    #     """
-    #     Drops labels to enable classifier-free guidance.
-    #     """
-    #     if force_drop_ids is None:
-    #         drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
-    #     else:
-    #         drop_ids = force_drop_ids == 1
-    #     drop_ids = drop_ids.unsqueeze(-1).unsqueeze(-1).repeat(labels[0].unsqueeze(0).shape)
-    #     labels = torch.where(drop_ids, torch.tensor(self.num_classes, dtype=labels.dtype).to(labels), labels)
-    #     return labels
+    def token_drop(self, labels, force_drop_ids=None):
+        """
+        Drops labels to enable classifier-free guidance.
+        """
+        if force_drop_ids is None:
+            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
+        else:
+            drop_ids = force_drop_ids == 1
+        #none_label = torch.ones(labels.shape)*self.num_classes
+        drop_ids = drop_ids.unsqueeze(-1).unsqueeze(-1).repeat(labels[0].unsqueeze(0).shape)
+        labels = torch.where(drop_ids, torch.tensor(self.num_classes+1, dtype=labels.dtype).to(labels), labels)
+        #labels = torch.where(drop_ids, none_label, labels)
+        return labels
 
-    def forward(self, input_semantics):
-        input_semantics = F.interpolate(input_semantics, size=[32, 32], mode='nearest')
-        embeddings = self.embdding_seg(input_semantics)
+    def forward(self, labels, train, force_drop_ids=None):
+        use_dropout = self.dropout_prob > 0
+        if (train and use_dropout) or (force_drop_ids is not None):
+            labels = self.token_drop(labels, force_drop_ids)
+        embeddings = self.embedding_table(labels.long())
         return embeddings
-
-
-class SPADEGroupNorm(nn.Module):
-    def __init__(self, norm_nc, label_nc, eps = 1e-5):
-        super().__init__()
-
-        self.norm = nn.GroupNorm(32, norm_nc, affine=False) # 32/16
-        self.norm_nc = norm_nc
-        self.label_nc = label_nc
-        self.eps = eps
-        nhidden = 128
-        self.mlp_shared = nn.Sequential(
-            nn.Conv2d(label_nc, nhidden, kernel_size=3, padding=1),
-            nn.ReLU()
-        )
-        self.mlp_gamma = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
-        self.mlp_beta = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
-
-    def forward(self, x, segmap):
-        # Part 1. generate parameter-free normalized activations
-        x = self.norm(x)
-        # Part 2. produce scaling and bias conditioned on semantic map
-        segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
-        actv = self.mlp_shared(segmap)
-        gamma = self.mlp_gamma(actv)
-        beta = self.mlp_beta(actv)
-        # apply scale and bias
-        return x * (1 + gamma) + beta
 
 
 #################################################################################
@@ -254,7 +183,7 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, num_classes, patch_size, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, **block_kwargs)
@@ -271,8 +200,6 @@ class DiTBlock(nn.Module):
         self.gamma2 = nn.Parameter(torch.ones(hidden_size))
 
     def forward(self, x, c):
-
-        # c = t.unsqueeze(1)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1)
         #x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         #x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
@@ -320,25 +247,18 @@ class FinalLayer(nn.Module):
     """
     The final layer of DiT.
     """
-    def __init__(self, hidden_size, patch_size, out_channels, num_classes):
+    def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
 
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)   # False update in 20230506
+        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)   # False update in 20230506
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
-        # self.y_embedder = LabelEmbedder(num_classes, hidden_size, patch_size)
 
     def forward(self, x, c):  # x:256 c:1024
-        # y = self.y_embedder(y).permute(0, 2, 3, 1)
-        # t = t.unsqueeze(1).unsqueeze(1).repeat(1, y.shape[1], y.shape[2], 1)
-        # #print(t.shape)
-        # c = y+t
-        # c = c.reshape(c.shape[0], -1, c.shape[-1])
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1) # [2,256,1152]
-
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)  # [2,256,32]
         return x
@@ -367,22 +287,22 @@ class DiT(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
-        #self.label_resize1 = torchvision.transforms.Resize([input_size//2, input_size//2], torchvision.transforms.InterpolationMode.NEAREST)
-        #self.label_resize2 = torchvision.transforms.Resize([input_size, input_size], torchvision.transforms.InterpolationMode.NEAREST)
+        self.label_resize1 = torchvision.transforms.Resize([input_size//2, input_size//2], torchvision.transforms.InterpolationMode.NEAREST)
+        # self.label_resize2 = torchvision.transforms.Resize([input_size, input_size], torchvision.transforms.InterpolationMode.NEAREST)
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
-        self.preprocess_input = Preprocess_input(num_classes, hidden_size, patch_size, class_dropout_prob)
+        self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, num_classes, patch_size, mlp_ratio=mlp_ratio) for _ in range(depth)
+            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        self.y_embedder = LabelEmbedder(num_classes, hidden_size, patch_size)
+
         # self.out_norm = OutNorm(self.out_channels, hidden_size)
-        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels, num_classes)
+        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights() # Gang Li.
 
     def initialize_weights(self):
@@ -404,7 +324,7 @@ class DiT(nn.Module):
         nn.init.constant_(self.x_embedder.proj.bias, 0)
 
         # Initialize label embedding table:
-        # nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
 
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -455,31 +375,25 @@ class DiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
+        y1 = self.label_resize1(y)
+        # y2 = self.label_resize2(y)
 
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-
-        y = self.preprocess_input(y, self.training) # self.y_embedder(y, self.training).permute(0, 2, 3, 1)  # [2, 1152, 256, 256]-->[2, 256, 256, 1152]
-
-        y = self.y_embedder(y).permute(0, 2, 3, 1)
-        t = t.unsqueeze(1).unsqueeze(1).repeat(1, y.shape[1], y.shape[2], 1)
-        c = y+t
-        c = c.reshape(c.shape[0], -1, c.shape[-1])
-
-        # c1 = t + y                                # (N,H/ patch_size,W/ patch_size,D)
-        # c1 = c1.reshape(x.shape[0], -1, x.shape[-1])  # (N,T,D)
+        y1 = self.y_embedder(y1, self.training)
+        #y2 = self.y_embedder(y2, self.training)
+        t1 = t.unsqueeze(1).unsqueeze(1).repeat(1, y1.shape[1], y1.shape[2], 1)
+        c1 = t1 + y1                                # (N,H/ patch_size,W/ patch_size,D)
+        c1 = c1.reshape(x.shape[0], -1, x.shape[-1])  # (N,T,D)
 
         #t2 = t.unsqueeze(1).unsqueeze(1).repeat(1, y2.shape[1], y2.shape[2], 1)
         #c2 = t2+y2  # (N,H/ patch_size,W/ patch_size,D)
         # c2 = c2.reshape(x.shape[0], -1, x.shape[-1])  # (N,T,D)
 
-
         for block in self.blocks:
-            #x = block(x, t, y)                      # (N, T, D)
-            x = block(x, c)
+            x = block(x, c1)                      # (N, T, D)
 
-        # x = self.final_layer(x, t, y)                # (N, T, patch_size ** 2 * out_channels) y:[2, 151, 256, 256]
-        x = self.final_layer(x, c)
+        x = self.final_layer(x, c1)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)          # (N, out_channels, H, W)  # x:[2,8,32,32] c2:[2, 32*32, D]
 
         # c2 = c2.permute(0, 3, 1, 2)
