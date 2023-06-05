@@ -156,13 +156,15 @@ def main(args):
         model.load_state_dict(state_dict, strict=False)
     
     for name, param in model.named_parameters():
+        # cpass
         if 'y_embedder.embedding_table.weight' in name:
             continue
-        if ('bias' not in name) and ('norm' not in name) and ('gamma' not in name) and ('final_layer' not in name):
+        # if ('bias' not in name) and ('norm' not in name) and ('embedding_mapping' not in name):
         #        and ('attn' not in name) and ('final_layer' not in name):
         #if ('lora' not in name) and ('bias' not in name) and ('norm' not in name) and ('gamma' not in name) and ('y_embedder.embedding_table.weight' not in name):
-            param.requires_grad = False
-    
+            #param.requires_grad = False
+        param.requires_grad = False
+
 
     for name, param in model.named_parameters():
         #if 'y_embedder.embedding_table' in name:
@@ -321,6 +323,6 @@ if __name__ == "__main__":
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100) # 100
-    parser.add_argument("--ckpt-every", type=int, default=5_000)
+    parser.add_argument("--ckpt-every", type=int, default=5_000) # 5_000
     args = parser.parse_args()
     main(args)

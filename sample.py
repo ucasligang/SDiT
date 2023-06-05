@@ -150,7 +150,7 @@ def main(args):
         # Setup classifier-free guidance:
         z = torch.cat([z, z], 0)
         # y_null = torch.tensor([150] * n, device=device)
-        y_null = torch.ones(y.shape, device=device)*(-1)
+        y_null = torch.ones(y.shape, device=device)*0
         y = torch.cat([y, y_null], 0)
         model_kwargs = dict(y=y, cfg_scale=args.cfg_scale)
 
@@ -196,7 +196,7 @@ if __name__ == "__main__":
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=150)
-    parser.add_argument("--cfg-scale", type=float, default=2.5)  # 1.5 4.0
+    parser.add_argument("--cfg-scale", type=float, default=0.0)  # 1.5 4.0
     parser.add_argument("--num-sampling-steps", type=int, default=250) # 250
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=1)  # 256

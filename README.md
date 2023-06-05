@@ -72,7 +72,6 @@ argument to use your own checkpoint instead. For example, to sample from the EMA
 
 ```bash
 python sample.py --model DiT-L/4 --image-size 256 --ckpt /path/to/model.pt
-python sample.py --model DiT-XL/2 --image-size 256 --ckpt /pub/data/ligang/projects/DiT/results/000-DiT-XL-2/checkpoints/0011000.pt
 ```
 
 
@@ -83,9 +82,6 @@ DiT models, but it can be easily modified to support other types of conditioning
 one node:
 
 ```bash
-CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 torchrun --nnodes=1 --nproc_per_node=2 train.py --model DiT-XL/2 --data-path ../../data/ADE/ADEChallengeData2016 --global_batch_size 48
-torchrun --nnodes=1 --nproc_per_node=N train.py --model DiT-XL/2 --data-path /path/to/imagenet/train
-
 torchrun --nnodes=1 --nproc_per_node=N train.py --model DiT-XL/2 --data-path /path/to/imagenet/train
 ```
 
@@ -120,6 +116,7 @@ Basic features that would be nice to add:
 - [ ] Resume training from a checkpoint
 - [ ] AMP/bfloat16 support
 
+**🔥 Feature Update** Check out this repository at https://github.com/chuanyangjin/fast-DiT to preview a selection of training speed acceleration and memory saving features including gradient checkpointing, mixed precision training and pre-extrated VAE features. With these advancements, we have achieved a training speed of 0.84 steps/sec for DiT-XL/2 using just a single A100 GPU.
 
 ## Evaluation (FID, Inception Score, etc.)
 

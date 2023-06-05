@@ -9,7 +9,6 @@ A minimal training script for DiT using PyTorch DDP.
 """
 import torch
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
-from diffusion.image_datasets import load_data
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
@@ -27,14 +26,10 @@ from time import time
 import argparse
 import logging
 import os
-from apex import amp
-
 
 from models import DiT_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-
-from torch.cuda.amp import autocast as autocast
 
 
 #################################################################################
@@ -145,88 +140,28 @@ def main(args):
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
     model = DiT_models[args.model](
-        #input_size=args.image_size,
-        class_dropout_prob=args.class_dropout_prob,
         input_size=latent_size,
         num_classes=args.num_classes
     )
-
-    model_keys = model.state_dict().keys()
-
-    #logger.info(model.state_dict().keys())
-    # Updated by Gang Li.
-
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu')
-        # print(checkpoint.keys())
-        checkpoint.pop('y_embedder.embedding_table.weight', None)
-        msg = model.load_state_dict(checkpoint, strict=False)
-        logger.info('msg:')
-        logger.info(len(msg[0]))
-        logger.info(msg)
-        logger.info(len(model_keys))
-        logger.info('model_keys')
-        logger.info(model_keys)
-        logger.info('checkpoint:')
-        logger.info(len(checkpoint.keys()))
-        logger.info(checkpoint.keys())
-
-
-
-
-    # for name, param in model.named_parameters():
-    for name, param in model.named_parameters():
-        if 'y_embedder.embedding_table.weight' in name:
-            continue
-        if ('bias' not in name): # and ('gamma' not in name) and ('norm' not in name):
-            param.requires_grad = False
-
-
-    for name, param in model.named_parameters():
-        #if 'y_embedder.embedding_table' in name:
-        logger.info(name)
-        logger.info(param.requires_grad)
-
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
-
-    # Gang Li.
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-    if args.use_fp16:
-        model, opt = amp.initialize(model.to(device), opt, opt_level="O1")
     model = DDP(model.to(device), device_ids=[rank])
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    logger.info(f"Trainable DiT Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad==True):,}")
-
-    trainable_rate = (sum(p.numel() for p in model.parameters() if p.requires_grad==True))/(sum(p.numel() for p in model.parameters()))
-    logger.info(f"Trainable DiT Parameters rate is :{trainable_rate*100}%")
-
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    # opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
 
     # Setup data:
-    # transform = transforms.Compose([
-    #     transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
-    #     transforms.RandomHorizontalFlip(),
-    #     transforms.ToTensor(),
-    #     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
-    # ])
-
-
-    logger.info("creating data loader...")
-    dataset = load_data(
-        dataset_mode=args.dataset_mode,
-        data_dir=args.data_path,
-        image_size=args.image_size,
-        # class_cond=args.class_cond,
-        is_train=args.is_train
-    )
-    # ImageFolder(args.data_path, transform=transform)
-
+    transform = transforms.Compose([
+        transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
+    ])
+    dataset = ImageFolder(args.data_path, transform=transform)
     sampler = DistributedSampler(
         dataset,
         num_replicas=dist.get_world_size(),
@@ -243,29 +178,11 @@ def main(args):
         pin_memory=True,
         drop_last=True
     )
-
-    # loader = load_data(
-    #     dataset_mode=args.dataset_mode,
-    #     data_dir=args.data_path,
-    #     batch_size=int(args.global_batch_size // dist.get_world_size()),
-    #     image_size=args.image_size,
-    #     # image_size=latent_size,
-    #     class_cond=args.class_cond,
-    #     is_train=args.is_train
-    # )
-
-    # logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path}
-    #logger.info(f"Dataset contains {len(loader):,} images ({args.data_path})")
-    logger.info('Data loading completed!')
-
-    # By Gang Li.
-    #if args.resume:
+    logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
     # Prepare models for training:
     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
-
-
     ema.eval()  # EMA model should always be in eval mode
 
     # Variables for monitoring/logging purposes:
@@ -280,7 +197,6 @@ def main(args):
         logger.info(f"Beginning epoch {epoch}...")
         for x, y in loader:
             x = x.to(device)
-            y = y['label_ori']
             y = y.to(device)
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
@@ -290,14 +206,7 @@ def main(args):
             loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
             loss = loss_dict["loss"].mean()
             opt.zero_grad()
-
-            # Gang Li
-            if args.use_fp16:
-                with amp.scale_loss(loss, opt) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
-
+            loss.backward()
             opt.step()
             update_ema(ema, model.module)
 
@@ -344,26 +253,17 @@ def main(args):
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-path", type=str, default='/pub/data/ligang/data/ADE/ADEChallengeData2016')
-    parser.add_argument("--dataset_mode", type=str, default='ade20k')
-    parser.add_argument("--class_cond", type=bool, default=True)
-    parser.add_argument("--is_train", type=bool, default=True)
-    parser.add_argument("--resume", type=str, default='/pub/data/ligang/projects/DiT/pretrained_models/DiT-XL-2-256x256.pt')
-    parser.add_argument("--use_fp16", type=bool, default=True)
-    parser.add_argument("--class_dropout_prob", type=float, default=0.0)
-
+    parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
-    parser.add_argument("--image_size", type=int, choices=[256, 512], default=256)
-    parser.add_argument("--num-classes", type=int, default=150)
+    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
+    parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=1400)
-    parser.add_argument("--global_batch_size", type=int, default=64) # 256
+    parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log-every", type=int, default=20) # 100
-    parser.add_argument("--ckpt-every", type=int, default=10_000) # 50_000
-
-
+    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--ckpt-every", type=int, default=50_000)
     args = parser.parse_args()
     main(args)
