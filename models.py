@@ -138,9 +138,9 @@ class DiTBlock(nn.Module):
     """
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, **block_kwargs)
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)  # False
+        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)  # False
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
@@ -164,7 +164,7 @@ class FinalLayer(nn.Module):
     """
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
