@@ -159,11 +159,11 @@ def main(args):
         # cpass
         if 'y_embedder.embedding_table.weight' in name:
             continue
-        # if ('bias' not in name) and ('norm' not in name) and ('embedding_mapping' not in name):
+        if ('bias' not in name) and ('norm' not in name):
         #        and ('attn' not in name) and ('final_layer' not in name):
         #if ('lora' not in name) and ('bias' not in name) and ('norm' not in name) and ('gamma' not in name) and ('y_embedder.embedding_table.weight' not in name):
             #param.requires_grad = False
-        param.requires_grad = False
+            param.requires_grad = False
 
 
     for name, param in model.named_parameters():
